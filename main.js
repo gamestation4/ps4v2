@@ -82,8 +82,6 @@ async function doJailBreak() {
     // Inject HEN payload
     jb_step_status = await PayloadLoader("payload.bin"); // Read payload from .bin file
     await sleep(500); // Wait 500ms
-    // Inject FAN payload
-    jb_step_status = await FancontrolLoader("fancontrol.bin");
     if (jb_step_status !== 1) {
       window.log("Gagal load HEN!", "red");
 	  window.log("\nTekan tombol PS, restart PS4 dan coba lagi...");
